@@ -35,22 +35,32 @@ jobs:
 
       - name: Fix Android Permissions & MinSdk
         run: |
-          python3 -c "
-          path = 'android/app/src/main/AndroidManifest.xml'
-          with open(path, 'r') as f: content = f.read()
-          perms = '<uses-permission android:name=\"android.permission.INTERNET\"/>\n<uses-permission android:name=\"android.permission.WRITE_EXTERNAL_STORAGE\"/>\n<uses-permission android:name=\"android.permission.READ_EXTERNAL_STORAGE\"/>\n'
-          content = content.replace('<application', perms + '<application')
-          with open(path, 'w') as f: f.write(content)
-          "
-          python3 -c "
+          python3 << 'EOF'
+          import os
+
+          # Add Permissions to AndroidManifest.xml
+          manifest_path = 'android/app/src/main/AndroidManifest.xml'
+          if os.path.exists(manifest_path):
+              with open(manifest_path, 'r') as f:
+                  content = f.read()
+              perms = """    <uses-permission android:name="android.permission.INTERNET"/>
+              <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"/>
+              <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"/>\n"""
+              if '<application' in content and 'android.permission.INTERNET' not in content:
+                  content = content.replace('<application', perms + '    <application')
+                  with open(manifest_path, 'w') as f:
+                      f.write(content)
+
+          # Ensure minSdk is 21
           for p in ['android/app/build.gradle', 'android/app/build.gradle.kts']:
-              try:
-                  with open(p, 'r') as f: c = f.read()
+              if os.path.exists(p):
+                  with open(p, 'r') as f:
+                      c = f.read()
                   c = c.replace('minSdkVersion = flutter.minSdkVersion', 'minSdkVersion = 21')
                   c = c.replace('minSdk = flutter.minSdk', 'minSdk = 21')
-                  with open(p, 'w') as f: f.write(c)
-              except Exception: pass
-          "
+                  with open(p, 'w') as f:
+                      f.write(c)
+          EOF
 
       - name: Build Release APK
         run: flutter build apk --release --no-tree-shake-icons
