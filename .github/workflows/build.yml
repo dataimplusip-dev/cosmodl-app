@@ -33,9 +33,24 @@ jobs:
           cp -r /tmp/mycode/lib .
           flutter pub add youtube_explode_dart path_provider permission_handler
 
-      - name: Setup Android Permissions
+      - name: Fix Android Permissions & MinSdk
         run: |
-          sed -i '/<application/i \    <uses-permission android:name="android.permission.INTERNET"/>\n    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"/>\n    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"/>' android/app/src/main/AndroidManifest.xml
+          python3 -c "
+          path = 'android/app/src/main/AndroidManifest.xml'
+          with open(path, 'r') as f: content = f.read()
+          perms = '<uses-permission android:name=\"android.permission.INTERNET\"/>\n<uses-permission android:name=\"android.permission.WRITE_EXTERNAL_STORAGE\"/>\n<uses-permission android:name=\"android.permission.READ_EXTERNAL_STORAGE\"/>\n'
+          content = content.replace('<application', perms + '<application')
+          with open(path, 'w') as f: f.write(content)
+          "
+          python3 -c "
+          for p in ['android/app/build.gradle', 'android/app/build.gradle.kts']:
+              try:
+                  with open(p, 'r') as f: c = f.read()
+                  c = c.replace('minSdkVersion = flutter.minSdkVersion', 'minSdkVersion = 21')
+                  c = c.replace('minSdk = flutter.minSdk', 'minSdk = 21')
+                  with open(p, 'w') as f: f.write(c)
+              except Exception: pass
+          "
 
       - name: Build Release APK
         run: flutter build apk --release --no-tree-shake-icons
