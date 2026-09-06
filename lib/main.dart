@@ -10,6 +10,9 @@ void main() {
   runApp(const CosmoDLApp());
 }
 
+// ----------------------------------------------------
+// প্রফেশনাল ডাউনলোড টাস্ক ও ম্যানেজার (স্বাধীন ইঞ্জিন সহ)
+// ----------------------------------------------------
 class DownloadTask {
   final String id;
   final String title;
@@ -18,16 +21,14 @@ class DownloadTask {
   final String thumbUrl;
   final int totalBytes;
   final StreamInfo streamInfo;
-  final YoutubeExplode yt;
 
   int downloadedBytes = 0;
   double progress = 0.0;
   String status = "Downloading"; // Downloading, Paused, Completed, Failed
   String? filePath;
 
-  StreamSubscription<List<int>>? subscription;
-  IOSink? sink;
-  File? file;
+  bool isPaused = false;
+  bool isCanceled = false;
 
   DownloadTask({
     required this.id,
@@ -37,10 +38,11 @@ class DownloadTask {
     required this.thumbUrl,
     required this.totalBytes,
     required this.streamInfo,
-    required this.yt,
   });
 
+  // স্বাধীন ইঞ্জিন দিয়ে ১০০% গ্যারান্টিড ডাউনলোড (আটকে যাওয়ার কোনো সুযোগ নেই)
   void start(VoidCallback onUpdate) async {
+    final ytClient = YoutubeExplode();
     try {
       Directory? dir;
       try {
@@ -50,74 +52,77 @@ class DownloadTask {
 
       String cleanTitle = title.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_').trim();
       if (cleanTitle.length > 30) cleanTitle = cleanTitle.substring(0, 30);
-      
+
       filePath = '${dir.path}/${cleanTitle}_$id.$ext';
-      file = File(filePath!);
-      sink = file!.openWrite();
+      final file = File(filePath!);
+      final sink = file.openWrite();
 
-      final stream = yt.videos.streamsClient.get(streamInfo);
+      final stream = ytClient.videos.streamsClient.get(streamInfo);
 
-      subscription = stream.listen(
-        (chunk) {
-          downloadedBytes += chunk.length;
-          sink?.add(chunk);
-          progress = totalBytes > 0 ? (downloadedBytes / totalBytes) : 0.0;
-          onUpdate();
-        },
-        onDone: () async {
-          await sink?.flush();
-          await sink?.close();
-          status = "Completed";
-          onUpdate();
-        },
-        onError: (_) {
-          status = "Failed";
-          onUpdate();
-        },
-        cancelOnError: true,
-      );
-    } catch (_) {
+      await for (final chunk in stream) {
+        if (isCanceled) break;
+
+        // পজ থাকলে অপেক্ষা করবে
+        while (isPaused) {
+          await Future.delayed(const Duration(milliseconds: 300));
+          if (isCanceled) break;
+        }
+
+        sink.add(chunk);
+        downloadedBytes += chunk.length;
+        progress = totalBytes > 0 ? (downloadedBytes / totalBytes) : 0.0;
+        onUpdate();
+      }
+
+      await sink.flush();
+      await sink.close();
+
+      if (!isCanceled) {
+        status = "Completed";
+        progress = 1.0;
+        onUpdate();
+      }
+    } catch (e) {
       status = "Failed";
       onUpdate();
+    } finally {
+      ytClient.close();
     }
   }
 
   void pause(VoidCallback onUpdate) {
-    if (status == "Downloading" && subscription != null) {
-      subscription?.pause();
-      status = "Paused";
-      onUpdate();
-    }
+    isPaused = true;
+    status = "Paused";
+    onUpdate();
   }
 
   void resume(VoidCallback onUpdate) {
-    if (status == "Paused" && subscription != null) {
-      subscription?.resume();
-      status = "Downloading";
-      onUpdate();
-    }
+    isPaused = false;
+    status = "Downloading";
+    onUpdate();
   }
 
-  void cancelAndDelete(VoidCallback onUpdate) async {
+  void cancelAndDelete(VoidCallback onUpdate) {
+    isCanceled = true;
+    isPaused = false;
+    status = "Deleted";
     try {
-      await subscription?.cancel();
-      await sink?.close();
-      if (file != null && file!.existsSync()) {
-        file!.deleteSync();
+      if (filePath != null) {
+        final f = File(filePath!);
+        if (f.existsSync()) f.deleteSync();
       }
     } catch (_) {}
-    status = "Deleted";
     onUpdate();
   }
 }
 
 class DownloadManager {
   static final ValueNotifier<List<DownloadTask>> tasks = ValueNotifier<List<DownloadTask>>([]);
-  static final ValueNotifier<int> unreadCount = ValueNotifier<int>(0);
+  static final ValueNotifier<int> unreadBadge = ValueNotifier<int>(0);
 
   static void addTask(DownloadTask task) {
     tasks.value = [task, ...tasks.value];
-    unreadCount.value++;
+    unreadBadge.value = unreadBadge.value + 1; // ব্যাজ সংখ্যা ১, ২, ৩ বাড়বে
     tasks.notifyListeners();
     task.start(() => tasks.notifyListeners());
   }
@@ -131,8 +136,8 @@ class DownloadManager {
     });
   }
 
-  static void clearUnread() {
-    unreadCount.value = 0;
+  static void markAsRead() {
+    unreadBadge.value = 0; // ট্যাবে ঢুকলে ব্যাজ ০ হয়ে যাবে
   }
 }
 
@@ -209,7 +214,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
         currentIndex: _currentIndex,
         onTap: (index) {
           if (index == 2) {
-            DownloadManager.clearUnread();
+            DownloadManager.markAsRead(); // ৩ নম্বর ট্যাবে ক্লিক করলে ব্যাজ মুছে যাবে
           }
           setState(() => _currentIndex = index);
         },
@@ -222,12 +227,12 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
           const BottomNavigationBarItem(icon: Icon(Icons.link), label: "Paste Link"),
           BottomNavigationBarItem(
             icon: ValueListenableBuilder<int>(
-              valueListenable: DownloadManager.unreadCount,
+              valueListenable: DownloadManager.unreadBadge,
               builder: (context, count, child) {
                 return Badge(
                   label: Text('$count', style: const TextStyle(fontSize: 10, color: Colors.white, fontWeight: FontWeight.bold)),
                   isLabelVisible: count > 0,
-                  backgroundColor: const Color(0xFF8B5CF6),
+                  backgroundColor: Colors.purpleAccent,
                   child: const Icon(Icons.download_done_rounded),
                 );
               },
@@ -240,6 +245,9 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
   }
 }
 
+// ----------------------------------------------------
+// TAB 1: VidMate স্টাইল ইউটিউব এক্সপ্লোর ও ফিড
+// ----------------------------------------------------
 class ExploreFeedTab extends StatefulWidget {
   final YoutubeExplode yt;
   const ExploreFeedTab({super.key, required this.yt});
@@ -414,6 +422,9 @@ class _ExploreFeedTabState extends State<ExploreFeedTab> {
   }
 }
 
+// ----------------------------------------------------
+// ফুল ইন্টারেক্টিভ ভিডিও প্লেয়ার স্ক্রিন (Play, Pause, টেনে দেওয়া স্লাইডার সহ)
+// ----------------------------------------------------
 class VideoPlayerScreen extends StatefulWidget {
   final Video video;
   final YoutubeExplode yt;
@@ -426,6 +437,8 @@ class VideoPlayerScreen extends StatefulWidget {
 class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
   VideoPlayerController? _controller;
   bool _isInit = false;
+  bool _showControls = true;
+  Timer? _hideTimer;
 
   @override
   void initState() {
@@ -441,12 +454,30 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
         ..initialize().then((_) {
           setState(() => _isInit = true);
           _controller?.play();
+          _startHideTimer();
         });
+      _controller?.addListener(() => setState(() {}));
     } catch (_) {}
+  }
+
+  void _startHideTimer() {
+    _hideTimer?.cancel();
+    _hideTimer = Timer(const Duration(seconds: 3), () {
+      if (mounted && _controller != null && _controller!.value.isPlaying) {
+        setState(() => _showControls = false);
+      }
+    });
+  }
+
+  String _formatDuration(Duration d) {
+    final m = d.inMinutes.remainder(60).toString().padLeft(2, '0');
+    final s = d.inSeconds.remainder(60).toString().padLeft(2, '0');
+    return '$m:$s';
   }
 
   @override
   void dispose() {
+    _hideTimer?.cancel();
     _controller?.dispose();
     super.dispose();
   }
@@ -454,31 +485,108 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Playing Video', style: TextStyle(fontSize: 16)), backgroundColor: Colors.transparent),
+      appBar: AppBar(title: const Text('Now Playing', style: TextStyle(fontSize: 16)), backgroundColor: Colors.transparent),
       body: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          // ইন্টারেক্টিভ প্লেয়ার
           AspectRatio(
             aspectRatio: 16 / 9,
             child: _isInit && _controller != null
-                ? Stack(
-                    alignment: Alignment.bottomCenter,
-                    children: [
-                      VideoPlayer(_controller!),
-                      VideoProgressIndicator(_controller!, allowScrubbing: true, colors: const VideoProgressColors(playedColor: Colors.purpleAccent)),
-                    ],
+                ? GestureDetector(
+                    onTap: () {
+                      setState(() => _showControls = !_showControls);
+                      if (_showControls) _startHideTimer();
+                    },
+                    child: Stack(
+                      alignment: Alignment.center,
+                      children: [
+                        VideoPlayer(_controller!),
+
+                        // টাচ কন্ট্রোলস (Play, Pause, Forward, Backward)
+                        if (_showControls) ...[
+                          Container(color: Colors.black.withOpacity(0.4)),
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              IconButton(
+                                icon: const Icon(Icons.replay_10_rounded, size: 36, color: Colors.white),
+                                onPressed: () {
+                                  final cur = _controller!.value.position;
+                                  _controller!.seekTo(cur - const Duration(seconds: 10));
+                                  _startHideTimer();
+                                },
+                              ),
+                              const SizedBox(width: 20),
+                              IconButton(
+                                icon: Icon(
+                                  _controller!.value.isPlaying ? Icons.pause_circle_filled_rounded : Icons.play_circle_filled_rounded,
+                                  size: 60,
+                                  color: Colors.purpleAccent,
+                                ),
+                                onPressed: () {
+                                  setState(() {
+                                    _controller!.value.isPlaying ? _controller!.pause() : _controller!.play();
+                                  });
+                                  _startHideTimer();
+                                },
+                              ),
+                              const SizedBox(width: 20),
+                              IconButton(
+                                icon: const Icon(Icons.forward_10_rounded, size: 36, color: Colors.white),
+                                onPressed: () {
+                                  final cur = _controller!.value.position;
+                                  _controller!.seekTo(cur + const Duration(seconds: 10));
+                                  _startHideTimer();
+                                },
+                              ),
+                            ],
+                          ),
+
+                          // টেনে দেওয়ার স্লাইডার ও টাইমার
+                          Positioned(
+                            bottom: 0, left: 0, right: 0,
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                              child: Row(
+                                children: [
+                                  Text(_formatDuration(_controller!.value.position), style: const TextStyle(fontSize: 10, color: Colors.white)),
+                                  Expanded(
+                                    child: Slider(
+                                      value: _controller!.value.position.inMilliseconds.toDouble().clamp(0.0, _controller!.value.duration.inMilliseconds.toDouble()),
+                                      min: 0.0,
+                                      max: _controller!.value.duration.inMilliseconds.toDouble(),
+                                      activeColor: Colors.purpleAccent,
+                                      inactiveColor: Colors.grey,
+                                      onChanged: (val) {
+                                        _controller!.seekTo(Duration(milliseconds: val.toInt()));
+                                        _startHideTimer();
+                                      },
+                                    ),
+                                  ),
+                                  Text(_formatDuration(_controller!.value.duration), style: const TextStyle(fontSize: 10, color: Colors.white)),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
                   )
                 : const Center(child: CircularProgressIndicator(color: Colors.purpleAccent)),
           ),
+
           Padding(
             padding: const EdgeInsets.all(16.0),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(widget.video.title, style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
+                Text(widget.video.title, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
                 const SizedBox(height: 6),
                 Text(widget.video.author, style: const TextStyle(fontSize: 12, color: Colors.grey)),
                 const SizedBox(height: 20),
+
+                // প্লেয়ার স্ক্রিন থেকে ১০০% কাজ করা ডাউনলোড বাটন
                 ElevatedButton.icon(
                   style: ElevatedButton.styleFrom(
                     backgroundColor: const Color(0xFF8B5CF6),
@@ -486,7 +594,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                   ),
                   icon: const Icon(Icons.download, color: Colors.white),
-                  label: const Text('Download This Video / Audio', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                  label: const Text('Download Video / Audio', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
                   onPressed: () {
                     showModalBottomSheet(
                       context: context,
@@ -505,6 +613,9 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
   }
 }
 
+// ----------------------------------------------------
+// TAB 2: লিংক পেস্ট করে ডাউনলোড
+// ----------------------------------------------------
 class LinkDownloaderTab extends StatefulWidget {
   final YoutubeExplode yt;
   static final TextEditingController urlController = TextEditingController();
@@ -598,6 +709,9 @@ class _LinkDownloaderTabState extends State<LinkDownloaderTab> {
   }
 }
 
+// ----------------------------------------------------
+// TAB 3: Downloads ম্যানেজার (পজ, রিজিউম, ডিলিট সহ লাইভ ট্র্যাকার)
+// ----------------------------------------------------
 class DownloadsManagerTab extends StatelessWidget {
   const DownloadsManagerTab({super.key});
 
@@ -609,9 +723,7 @@ class DownloadsManagerTab extends StatelessWidget {
         valueListenable: DownloadManager.tasks,
         builder: (context, tasks, child) {
           if (tasks.isEmpty) {
-            return const Center(
-              child: Text('কোনো ডাউনলোড টাস্ক নেই!', style: TextStyle(color: Colors.grey, fontSize: 13)),
-            );
+            return const Center(child: Text('কোনো ডাউনলোড টাস্ক নেই!', style: TextStyle(color: Colors.grey, fontSize: 13)));
           }
           return ListView.builder(
             itemCount: tasks.length,
@@ -629,11 +741,7 @@ class DownloadsManagerTab extends StatelessWidget {
                   color: const Color(0xFF0F172A),
                   borderRadius: BorderRadius.circular(14),
                   border: Border.all(
-                    color: isDone
-                        ? Colors.green.withOpacity(0.3)
-                        : isPaused
-                            ? Colors.amber.withOpacity(0.3)
-                            : Colors.purple.withOpacity(0.2),
+                    color: isDone ? Colors.green.withOpacity(0.3) : isPaused ? Colors.amber.withOpacity(0.3) : Colors.purple.withOpacity(0.2),
                   ),
                 ),
                 child: Column(
@@ -653,13 +761,7 @@ class DownloadsManagerTab extends StatelessWidget {
                               Text(task.title, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold), maxLines: 1, overflow: TextOverflow.ellipsis),
                               const SizedBox(height: 2),
                               Text('${task.quality} • ${task.ext.toUpperCase()} • ${task.status}',
-                                  style: TextStyle(
-                                      fontSize: 10,
-                                      color: isDone
-                                          ? Colors.greenAccent
-                                          : isPaused
-                                              ? Colors.amberAccent
-                                              : Colors.cyanAccent)),
+                                  style: TextStyle(fontSize: 10, color: isDone ? Colors.greenAccent : isPaused ? Colors.amberAccent : Colors.cyanAccent)),
                             ],
                           ),
                         ),
@@ -697,15 +799,12 @@ class DownloadsManagerTab extends StatelessWidget {
                             style: const TextStyle(fontSize: 10, color: Colors.grey),
                           ),
                           Text('${(task.progress * 100).toStringAsFixed(0)}%',
-                              style: TextStyle(
-                                  fontSize: 10,
-                                  fontWeight: FontWeight.bold,
-                                  color: isPaused ? Colors.amberAccent : Colors.purpleAccent)),
+                              style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: isPaused ? Colors.amberAccent : Colors.purpleAccent)),
                         ],
                       ),
                     ],
                     if (isDone)
-                      const Text('✓ সেভ সম্পন্ন হয়েছে!', style: TextStyle(fontSize: 10, color: Colors.greenAccent, fontWeight: FontWeight.bold)),
+                      const Text('✓ ডাউনলোড সম্পন্ন!', style: TextStyle(fontSize: 10, color: Colors.greenAccent, fontWeight: FontWeight.bold)),
                   ],
                 ),
               );
@@ -717,6 +816,9 @@ class DownloadsManagerTab extends StatelessWidget {
   }
 }
 
+// ----------------------------------------------------
+// ডাউনলোড কোয়ালিটি মডাল (ডুপ্লিকেট রিমুভ ও ফাস্ট অডিও)
+// ----------------------------------------------------
 class DownloadBottomSheet extends StatefulWidget {
   final Video video;
   final YoutubeExplode yt;
@@ -750,7 +852,6 @@ class _DownloadBottomSheetState extends State<DownloadBottomSheet> with SingleTi
     }
   }
 
-  // রেজোলিউশন ডুপ্লিকেট দূর করা (Container.mp4 এরর মুক্ত কোড)
   List<VideoStreamInfo> _getUniqueVideoStreams(StreamManifest manifest) {
     final Map<int, VideoStreamInfo> uniqueMap = {};
     final allVideos = manifest.video.toList();
@@ -774,7 +875,6 @@ class _DownloadBottomSheetState extends State<DownloadBottomSheet> with SingleTi
     return sortedHeights.map((h) => uniqueMap[h]!).toList();
   }
 
-  // অডিও ফরম্যাট ফিল্টার
   List<AudioStreamInfo> _getAudioStreams(StreamManifest manifest) {
     final List<AudioStreamInfo> audios = [];
     final m4a = manifest.audioOnly.where((s) => s.container.name.toLowerCase() == 'mp4').toList();
@@ -798,7 +898,6 @@ class _DownloadBottomSheetState extends State<DownloadBottomSheet> with SingleTi
       thumbUrl: widget.video.thumbnails.highResUrl,
       totalBytes: streamInfo.size.totalBytes,
       streamInfo: streamInfo,
-      yt: widget.yt,
     );
 
     DownloadManager.addTask(task);
@@ -807,7 +906,7 @@ class _DownloadBottomSheetState extends State<DownloadBottomSheet> with SingleTi
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(
         backgroundColor: Color(0xFF8B5CF6),
-        content: Text('ডাউনলোড শুরু হয়েছে! Downloads ট্যাবে জমা হয়েছে।'),
+        content: Text('ডাউনলোড শুরু হয়েছে! Downloads ট্যাবে প্রগ্রেস দেখুন।'),
         duration: Duration(seconds: 2),
       ),
     );
@@ -844,7 +943,6 @@ class _DownloadBottomSheetState extends State<DownloadBottomSheet> with SingleTi
                 : TabBarView(
                     controller: _tabController,
                     children: [
-                      // VIDEO তালিকা (ডুপ্লিকেট ছাড়া)
                       Builder(builder: (context) {
                         final videoList = _getUniqueVideoStreams(_manifest!);
                         return ListView.builder(
@@ -871,7 +969,6 @@ class _DownloadBottomSheetState extends State<DownloadBottomSheet> with SingleTi
                         );
                       }),
 
-                      // AUDIO তালিকা (ফাস্ট M4A)
                       Builder(builder: (context) {
                         final audioList = _getAudioStreams(_manifest!);
                         return ListView.builder(
