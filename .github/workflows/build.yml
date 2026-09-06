@@ -33,34 +33,41 @@ jobs:
           cp -r /tmp/mycode/lib .
           flutter pub add youtube_explode_dart path_provider
 
-      - name: Setup Android Share Intent & Permissions
+      - name: Setup YouTube Share Intent & Permissions
         run: |
           python3 << 'EOF'
           import os, re
 
-          # 1. AndroidManifest-এ Share Intent Filter যোগ করা
+          # 1. AndroidManifest-এ Share Intent বসানো
           manifest_path = 'android/app/src/main/AndroidManifest.xml'
           if os.path.exists(manifest_path):
               with open(manifest_path, 'r') as f:
-                  content = f.read()
+                  c = f.read()
               
               share_intent = """            <intent-filter>
                   <action android:name="android.intent.action.SEND" />
                   <category android:name="android.intent.category.DEFAULT" />
                   <data android:mimeType="text/plain" />
               </intent-filter>
+              <intent-filter>
+                  <action android:name="android.intent.action.VIEW" />
+                  <category android:name="android.intent.category.DEFAULT" />
+                  <category android:name="android.intent.category.BROWSABLE" />
+                  <data android:scheme="https" android:host="www.youtube.com" />
+                  <data android:scheme="https" android:host="youtu.be" />
+              </intent-filter>
           """
-              if '</activity>' in content and 'android.intent.action.SEND' not in content:
-                  content = content.replace('</activity>', share_intent + '        </activity>')
+              if '</activity>' in c and 'android.intent.action.SEND' not in c:
+                  c = c.replace('</activity>', share_intent + '        </activity>')
 
               perms = '    <uses-permission android:name="android.permission.INTERNET"/>\n'
-              if '<application' in content and 'android.permission.INTERNET' not in content:
-                  content = content.replace('<application', perms + '    <application')
+              if '<application' in c and 'android.permission.INTERNET' not in c:
+                  c = c.replace('<application', perms + '    <application')
 
               with open(manifest_path, 'w') as f:
-                  f.write(content)
+                  f.write(c)
 
-          # 2. MainActivity-তে Share হ্যান্ডলার কোড যোগ করা
+          # 2. MainActivity-তে Kotlin Share কোড সেট করা
           kt_path = 'android/app/src/main/kotlin/com/naim/cosmodl/MainActivity.kt'
           if os.path.exists(kt_path):
               kt_code = """package com.naim.cosmodl
@@ -88,6 +95,8 @@ jobs:
               private fun handleIntent(intent: Intent?) {
                   if (intent?.action == Intent.ACTION_SEND && intent.type == "text/plain") {
                       sharedText = intent.getStringExtra(Intent.EXTRA_TEXT)
+                  } else if (intent?.action == Intent.ACTION_VIEW) {
+                      sharedText = intent.dataString
                   }
               }
 
@@ -110,9 +119,9 @@ jobs:
           # 3. minSdk 21 সেট করা
           for p in ['android/app/build.gradle', 'android/app/build.gradle.kts']:
               if os.path.exists(p):
-                  with open(p, 'r') as f: c = f.read()
-                  c = re.sub(r'flutter\.minSdk(Version)?', '21', c)
-                  with open(p, 'w') as f: f.write(c)
+                  with open(p, 'r') as f: text = f.read()
+                  text = re.sub(r'flutter\.minSdk(Version)?', '21', text)
+                  with open(p, 'w') as f: f.write(text)
           EOF
 
       - name: Build Release APK
