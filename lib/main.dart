@@ -47,7 +47,6 @@ class _HomeScreenState extends State<HomeScreen> {
   Video? _video;
   StreamManifest? _manifest;
 
-  // ভিডিওর ফরম্যাট ও কোয়ালিটি অ্যানালাইজ করা (ইউজারের নিজস্ব আইপি দিয়ে)
   Future<void> _analyzeVideo() async {
     final url = _urlController.text.trim();
     if (url.isEmpty) {
@@ -75,12 +74,11 @@ class _HomeScreenState extends State<HomeScreen> {
     } catch (e) {
       setState(() => _isLoading = false);
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('ভিডিওর তথ্য পাওয়া যায়নি: $e')),
+        SnackBar(content: Text('ভিডিওর তথ্য আনা যায়নি: $e')),
       );
     }
   }
 
-  // সরাসরি ডিভাইসে ফাইল ডাউনলোড করা
   Future<void> _downloadStream(StreamInfo streamInfo, String ext) async {
     await Permission.storage.request();
 
@@ -93,7 +91,6 @@ class _HomeScreenState extends State<HomeScreen> {
     try {
       final stream = _yt.videos.streamsClient.get(streamInfo);
       
-      // ফোনের স্টোরেজ ডিরেক্টরি
       Directory? dir = await getExternalStorageDirectory() ?? await getApplicationDocumentsDirectory();
       String cleanTitle = _video!.title.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_');
       File file = File('${dir.path}/$cleanTitle.$ext');
@@ -106,7 +103,7 @@ class _HomeScreenState extends State<HomeScreen> {
         downloadedBytes += data.length;
         output.add(data);
         setState(() {
-          _progress = downloadedBytes / totalBytes;
+          _progress = totalBytes > 0 ? (downloadedBytes / totalBytes) : 0.0;
           _statusText = "${(_progress * 100).toStringAsFixed(1)}% সম্পন্ন হয়েছে";
         });
       }
@@ -122,7 +119,7 @@ class _HomeScreenState extends State<HomeScreen> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           backgroundColor: Colors.green, 
-          content: Text('ডাউনলোড সম্পন্ন! ফাইল সেভ হয়েছে:\n${file.path}')
+          content: Text('ডাউনলোড সম্পন্ন হয়েছে!\n${file.path}')
         ),
       );
     } catch (e) {
@@ -163,7 +160,6 @@ class _HomeScreenState extends State<HomeScreen> {
         padding: const EdgeInsets.all(16.0),
         child: Column(
           children: [
-            // ইনপুট বক্স
             Container(
               decoration: BoxDecoration(
                 color: const Color(0xFF0F172A),
@@ -197,7 +193,6 @@ class _HomeScreenState extends State<HomeScreen> {
             if (_isLoading)
               const Center(child: CircularProgressIndicator(color: Colors.purpleAccent)),
 
-            // প্রগ্রেস বার
             if (_isDownloading)
               Container(
                 margin: const EdgeInsets.only(bottom: 20),
@@ -216,7 +211,6 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
               ),
 
-            // ভিডিওর রেজোলিউশন ও অডিও কার্ড
             if (_video != null && _manifest != null) ...[
               ClipRRect(
                 borderRadius: BorderRadius.circular(16),
@@ -232,24 +226,26 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
               const SizedBox(height: 8),
 
-              // ভিডিও ফরম্যাট (শুধু যেগুলো বাস্তবে আছে)
-              ..._manifest!.muxed.map((stream) => Container(
-                margin: const EdgeInsets.only(bottom: 8),
-                decoration: BoxDecoration(
-                  color: const Color(0xFF1E293B),
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: ListTile(
-                  leading: const Icon(Icons.video_collection, color: Colors.cyanAccent),
-                  title: Text('MP4 Video (${stream.qualityLabel})', style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
-                  subtitle: Text('${stream.size.totalMegaBytes.toStringAsFixed(1)} MB', style: const TextStyle(fontSize: 11, color: Colors.grey)),
-                  trailing: ElevatedButton(
-                    style: ElevatedButton.styleFrom(backgroundColor: Colors.purpleAccent),
-                    onPressed: _isDownloading ? null : () => _downloadStream(stream, 'mp4'),
-                    child: const Text('Download', style: TextStyle(fontSize: 11, color: Colors.white)),
+              ..._manifest!.muxed.map((stream) {
+                double mb = stream.size.totalBytes / (1024 * 1024);
+                return Container(
+                  margin: const EdgeInsets.only(bottom: 8),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF1E293B),
+                    borderRadius: BorderRadius.circular(12),
                   ),
-                ),
-              )),
+                  child: ListTile(
+                    leading: const Icon(Icons.video_collection, color: Colors.cyanAccent),
+                    title: Text('MP4 Video (${stream.qualityLabel})', style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
+                    subtitle: Text('${mb.toStringAsFixed(1)} MB', style: const TextStyle(fontSize: 11, color: Colors.grey)),
+                    trailing: ElevatedButton(
+                      style: ElevatedButton.styleFrom(backgroundColor: Colors.purpleAccent),
+                      onPressed: _isDownloading ? null : () => _downloadStream(stream, 'mp4'),
+                      child: const Text('Download', style: TextStyle(fontSize: 11, color: Colors.white)),
+                    ),
+                  ),
+                );
+              }),
 
               const SizedBox(height: 12),
               const Align(
@@ -258,25 +254,28 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
               const SizedBox(height: 8),
 
-              // অডিও ফরম্যাট (M4A)
               if (_manifest!.audioOnly.isNotEmpty)
-                Container(
-                  margin: const EdgeInsets.only(bottom: 8),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFF1E293B),
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: ListTile(
-                    leading: const Icon(Icons.music_note, color: Colors.greenAccent),
-                    title: const Text('High Quality Audio (M4A)', style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
-                    subtitle: Text('${_manifest!.audioOnly.withHighestBitrate().size.totalMegaBytes.toStringAsFixed(1)} MB', style: const TextStyle(fontSize: 11, color: Colors.grey)),
-                    trailing: ElevatedButton(
-                      style: ElevatedButton.styleFrom(backgroundColor: Colors.green),
-                      onPressed: _isDownloading ? null : () => _downloadStream(_manifest!.audioOnly.withHighestBitrate(), 'm4a'),
-                      child: const Text('Download', style: TextStyle(fontSize: 11, color: Colors.white)),
+                Builder(builder: (context) {
+                  final audioStream = _manifest!.audioOnly.withHighestBitrate();
+                  double mb = audioStream.size.totalBytes / (1024 * 1024);
+                  return Container(
+                    margin: const EdgeInsets.only(bottom: 8),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF1E293B),
+                      borderRadius: BorderRadius.circular(12),
                     ),
-                  ),
-                ),
+                    child: ListTile(
+                      leading: const Icon(Icons.music_note, color: Colors.greenAccent),
+                      title: const Text('High Quality Audio (M4A)', style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
+                      subtitle: Text('${mb.toStringAsFixed(1)} MB', style: const TextStyle(fontSize: 11, color: Colors.grey)),
+                      trailing: ElevatedButton(
+                        style: ElevatedButton.styleFrom(backgroundColor: Colors.green),
+                        onPressed: _isDownloading ? null : () => _downloadStream(audioStream, 'm4a'),
+                        child: const Text('Download', style: TextStyle(fontSize: 11, color: Colors.white)),
+                      ),
+                    ),
+                  );
+                }),
             ],
           ],
         ),
