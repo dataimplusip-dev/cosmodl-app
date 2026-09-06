@@ -10,9 +10,6 @@ void main() {
   runApp(const CosmoDLApp());
 }
 
-// ----------------------------------------------------
-// মাল্টিপল ডাউনলোড, পজ/রিজিউম ও ব্যাজ ট্র্যাকার মডেল
-// ----------------------------------------------------
 class DownloadTask {
   final String id;
   final String title;
@@ -212,7 +209,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
         currentIndex: _currentIndex,
         onTap: (index) {
           if (index == 2) {
-            DownloadManager.clearUnread(); // ট্যাবে ঢুকলে ব্যাজ মুছে যাবে
+            DownloadManager.clearUnread();
           }
           setState(() => _currentIndex = index);
         },
@@ -243,9 +240,6 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
   }
 }
 
-// ----------------------------------------------------
-// TAB 1: VidMate স্টাইল ইউটিউব এক্সপ্লোর ও সার্চ
-// ----------------------------------------------------
 class ExploreFeedTab extends StatefulWidget {
   final YoutubeExplode yt;
   const ExploreFeedTab({super.key, required this.yt});
@@ -420,9 +414,6 @@ class _ExploreFeedTabState extends State<ExploreFeedTab> {
   }
 }
 
-// ----------------------------------------------------
-// ইন-অ্যাপ ভিডিও প্লেয়ার স্ক্রিন
-// ----------------------------------------------------
 class VideoPlayerScreen extends StatefulWidget {
   final Video video;
   final YoutubeExplode yt;
@@ -514,9 +505,6 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
   }
 }
 
-// ----------------------------------------------------
-// TAB 2: লিংক পেস্ট করে ডাউনলোড
-// ----------------------------------------------------
 class LinkDownloaderTab extends StatefulWidget {
   final YoutubeExplode yt;
   static final TextEditingController urlController = TextEditingController();
@@ -610,9 +598,6 @@ class _LinkDownloaderTabState extends State<LinkDownloaderTab> {
   }
 }
 
-// ----------------------------------------------------
-// TAB 3: Downloads ম্যানেজার (পজ, রিজিউম, ডিলিট সহ)
-// ----------------------------------------------------
 class DownloadsManagerTab extends StatelessWidget {
   const DownloadsManagerTab({super.key});
 
@@ -678,7 +663,6 @@ class DownloadsManagerTab extends StatelessWidget {
                             ],
                           ),
                         ),
-                        // একশন বাটনস (Pause, Resume, Delete)
                         if (!isDone && !isFailed) ...[
                           IconButton(
                             icon: Icon(isPaused ? Icons.play_arrow_rounded : Icons.pause_rounded, color: Colors.cyanAccent),
@@ -733,9 +717,6 @@ class DownloadsManagerTab extends StatelessWidget {
   }
 }
 
-// ----------------------------------------------------
-// ডাউনলোড কোয়ালিটি মডাল (ডুপ্লিকেট ছাড়া রেজোলিউশন ও ফাস্ট M4A অডিও)
-// ----------------------------------------------------
 class DownloadBottomSheet extends StatefulWidget {
   final Video video;
   final YoutubeExplode yt;
@@ -769,14 +750,16 @@ class _DownloadBottomSheetState extends State<DownloadBottomSheet> with SingleTi
     }
   }
 
-  // রেজোলিউশন ডুপ্লিকেট দূর করা (4K, 2K, 1080p, 720p, 480p, 360p - প্রতিটির ১টি করে সেরা কোয়ালিটি)
+  // রেজোলিউশন ডুপ্লিকেট দূর করা (Container.mp4 এরর মুক্ত কোড)
   List<VideoStreamInfo> _getUniqueVideoStreams(StreamManifest manifest) {
     final Map<int, VideoStreamInfo> uniqueMap = {};
     final allVideos = manifest.video.toList();
 
     allVideos.sort((a, b) {
-      if (a.container == Container.mp4 && b.container != Container.mp4) return -1;
-      if (b.container == Container.mp4 && a.container != Container.mp4) return 1;
+      bool aIsMp4 = a.container.name.toLowerCase() == 'mp4';
+      bool bIsMp4 = b.container.name.toLowerCase() == 'mp4';
+      if (aIsMp4 && !bIsMp4) return -1;
+      if (!aIsMp4 && bIsMp4) return 1;
       return b.bitrate.compareTo(a.bitrate);
     });
 
@@ -791,21 +774,20 @@ class _DownloadBottomSheetState extends State<DownloadBottomSheet> with SingleTi
     return sortedHeights.map((h) => uniqueMap[h]!).toList();
   }
 
-  // ফাস্ট ও ১০০% কাজ করা অডিও স্ট্রিম নির্বাচন (M4A)
+  // অডিও ফরম্যাট ফিল্টার
   List<AudioStreamInfo> _getAudioStreams(StreamManifest manifest) {
     final List<AudioStreamInfo> audios = [];
-    final m4a = manifest.audioOnly.where((s) => s.container == Container.mp4).toList();
+    final m4a = manifest.audioOnly.where((s) => s.container.name.toLowerCase() == 'mp4').toList();
     if (m4a.isNotEmpty) {
       audios.add(m4a.withHighestBitrate());
     }
-    final webm = manifest.audioOnly.where((s) => s.container != Container.mp4).toList();
+    final webm = manifest.audioOnly.where((s) => s.container.name.toLowerCase() != 'mp4').toList();
     if (webm.isNotEmpty) {
       audios.add(webm.withHighestBitrate());
     }
     return audios;
   }
 
-  // ব্যাকগ্রাউন্ডে ডাউনলোড পাঠানো
   void _startDownload(StreamInfo streamInfo, String qualityName, String ext) {
     final taskId = DateTime.now().millisecondsSinceEpoch.toString();
     final task = DownloadTask(
@@ -889,7 +871,7 @@ class _DownloadBottomSheetState extends State<DownloadBottomSheet> with SingleTi
                         );
                       }),
 
-                      // AUDIO তালিকা (ফাস্ট M4A অডিও)
+                      // AUDIO তালিকা (ফাস্ট M4A)
                       Builder(builder: (context) {
                         final audioList = _getAudioStreams(_manifest!);
                         return ListView.builder(
@@ -897,7 +879,7 @@ class _DownloadBottomSheetState extends State<DownloadBottomSheet> with SingleTi
                           itemBuilder: (context, i) {
                             final s = audioList[i];
                             double mb = s.size.totalBytes / (1024 * 1024);
-                            bool isM4A = s.container == Container.mp4;
+                            bool isM4A = s.container.name.toLowerCase() == 'mp4';
                             String label = isM4A ? "High Quality Audio (M4A)" : "WebM Audio";
                             String ext = isM4A ? "m4a" : "opus";
 
