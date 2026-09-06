@@ -11,7 +11,7 @@ void main() {
 }
 
 // ----------------------------------------------------
-// প্রফেশনাল রেঞ্জ ডাউনলোডার (অটো-রিট্রাই ও আনস্টপাবল ইঞ্জিন)
+// প্রফেশনাল ডাউনলোড টাস্ক মডেল
 // ----------------------------------------------------
 class DownloadTask {
   final String id;
@@ -20,7 +20,8 @@ class DownloadTask {
   final String ext;
   final String thumbUrl;
   final int totalBytes;
-  final Uri streamUrl;
+  final StreamInfo streamInfo;
+  final YoutubeExplode yt;
 
   int downloadedBytes = 0;
   double progress = 0.0;
@@ -37,14 +38,11 @@ class DownloadTask {
     required this.ext,
     required this.thumbUrl,
     required this.totalBytes,
-    required this.streamUrl,
+    required this.streamInfo,
+    required this.yt,
   });
 
-  // এই ফাংশনটি ইউটিউব লাইন কেটে দিলেও নিজে থেকেই রিকানেক্ট করে ১০০% শেষ করবে
   void start(VoidCallback onUpdate) async {
-    final client = HttpClient();
-    client.connectionTimeout = const Duration(seconds: 15);
-
     try {
       Directory? dir;
       try {
@@ -57,56 +55,33 @@ class DownloadTask {
 
       filePath = '${dir.path}/${cleanTitle}_$id.$ext';
       final file = File(filePath!);
+      final sink = file.openWrite();
 
-      // যদি আগে কিছুটা নেমে থাকে, সেখান থেকেই শুরু হবে
-      downloadedBytes = file.existsSync() ? file.lengthSync() : 0;
+      // সরাসরি অফিশিয়াল স্ট্রিম ফেচ
+      final stream = yt.videos.streamsClient.get(streamInfo);
 
-      while (downloadedBytes < totalBytes && !isCanceled) {
-        while (isPaused && !isCanceled) {
-          await Future.delayed(const Duration(milliseconds: 300));
-        }
+      int lastUpdate = 0;
+      await for (final chunk in stream) {
         if (isCanceled) break;
 
-        try {
-          final request = await client.getUrl(streamUrl);
-          
-          // ব্রাউজারের পরিচয় দেওয়া যাতে অডিও ০% এ আটকে না থাকে
-          request.headers.set(
-            HttpHeaders.userAgentHeader,
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-          );
-          request.headers.set('Connection', 'keep-alive');
-          
-          // যত বাইট নেমেছে ঠিক তার পর থেকে রি-কানেক্ট করার ম্যাজিক রেঞ্জ
-          request.headers.set('Range', 'bytes=$downloadedBytes-');
+        while (isPaused) {
+          await Future.delayed(const Duration(milliseconds: 300));
+          if (isCanceled) break;
+        }
 
-          final response = await request.close();
+        sink.add(chunk);
+        downloadedBytes += chunk.length;
+        progress = totalBytes > 0 ? (downloadedBytes / totalBytes) : 0.0;
 
-          if (response.statusCode == 200 || response.statusCode == 206) {
-            final sink = file.openWrite(mode: FileMode.append);
-
-            await for (final chunk in response) {
-              if (isCanceled) break;
-              while (isPaused && !isCanceled) {
-                await Future.delayed(const Duration(milliseconds: 300));
-              }
-
-              sink.add(chunk);
-              downloadedBytes += chunk.length;
-              progress = totalBytes > 0 ? (downloadedBytes / totalBytes) : 0.0;
-              onUpdate();
-            }
-
-            await sink.flush();
-            await sink.close();
-          } else {
-            await Future.delayed(const Duration(seconds: 1));
-          }
-        } catch (_) {
-          // ইউটিউব লাইন কেটে দিলে ১ সেকেন্ড পর অটো-রিজিউম হবে
-          await Future.delayed(const Duration(seconds: 1));
+        final now = DateTime.now().millisecondsSinceEpoch;
+        if (now - lastUpdate > 300) {
+          lastUpdate = now;
+          onUpdate();
         }
       }
+
+      await sink.flush();
+      await sink.close();
 
       if (!isCanceled) {
         status = "Completed";
@@ -116,8 +91,6 @@ class DownloadTask {
     } catch (e) {
       status = "Failed";
       onUpdate();
-    } finally {
-      client.close();
     }
   }
 
@@ -149,11 +122,12 @@ class DownloadTask {
 
 class DownloadManager {
   static final ValueNotifier<List<DownloadTask>> tasks = ValueNotifier<List<DownloadTask>>([]);
-  static final ValueNotifier<int> unreadBadge = ValueNotifier<int>(0);
+
+  // লাইভ অ্যাক্টিভ ডাউনলোড কাউন্টার (১, ২, ৩...)
+  static int get activeCount => tasks.value.where((t) => t.status == "Downloading" || t.status == "Paused").length;
 
   static void addTask(DownloadTask task) {
     tasks.value = [task, ...tasks.value];
-    unreadBadge.value = unreadBadge.value + 1; // ১, ২, ৩ ব্যাজ গণনা
     tasks.notifyListeners();
     task.start(() => tasks.notifyListeners());
   }
@@ -165,10 +139,6 @@ class DownloadManager {
       tasks.value = list.where((t) => t.id != id).toList();
       tasks.notifyListeners();
     });
-  }
-
-  static void markAsRead() {
-    unreadBadge.value = 0; // ট্যাবে ঢুকলে ব্যাজ ০ হবে
   }
 }
 
@@ -243,12 +213,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
       ),
       bottomNavigationBar: BottomNavigationBar(
         currentIndex: _currentIndex,
-        onTap: (index) {
-          if (index == 2) {
-            DownloadManager.markAsRead();
-          }
-          setState(() => _currentIndex = index);
-        },
+        onTap: (index) => setState(() => _currentIndex = index),
         backgroundColor: const Color(0xFF070D1E),
         selectedItemColor: const Color(0xFF8B5CF6),
         unselectedItemColor: Colors.grey,
@@ -257,9 +222,10 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
           const BottomNavigationBarItem(icon: Icon(Icons.explore), label: "Explore"),
           const BottomNavigationBarItem(icon: Icon(Icons.link), label: "Paste Link"),
           BottomNavigationBarItem(
-            icon: ValueListenableBuilder<int>(
-              valueListenable: DownloadManager.unreadBadge,
-              builder: (context, count, child) {
+            icon: ValueListenableBuilder<List<DownloadTask>>(
+              valueListenable: DownloadManager.tasks,
+              builder: (context, tasks, child) {
+                final count = DownloadManager.activeCount;
                 return Badge(
                   label: Text('$count', style: const TextStyle(fontSize: 10, color: Colors.white, fontWeight: FontWeight.bold)),
                   isLabelVisible: count > 0,
@@ -844,7 +810,7 @@ class DownloadsManagerTab extends StatelessWidget {
 }
 
 // ----------------------------------------------------
-// কোয়ালিটি মডাল (ডুপ্লিকেট ছাড়া ও ১০০% ফাস্ট অডিও)
+// কোয়ালিটি মডাল (নিরাপদ ও নির্ভরযোগ্য ইঞ্জিন)
 // ----------------------------------------------------
 class DownloadBottomSheet extends StatefulWidget {
   final Video video;
@@ -869,6 +835,7 @@ class _DownloadBottomSheetState extends State<DownloadBottomSheet> with SingleTi
 
   Future<void> _loadManifest() async {
     try {
+      // সাধারণ অফিশিয়াল নিরাপদ ম্যানিফেস্ট ফেচ
       final manifest = await widget.yt.videos.streamsClient.getManifest(widget.video.id);
       setState(() {
         _manifest = manifest;
@@ -908,9 +875,9 @@ class _DownloadBottomSheetState extends State<DownloadBottomSheet> with SingleTi
     if (m4a.isNotEmpty) {
       audios.add(m4a.withHighestBitrate());
     }
-    final webm = manifest.audioOnly.where((s) => s.container.name.toLowerCase() != 'mp4').toList();
-    if (webm.isNotEmpty) {
-      audios.add(webm.withHighestBitrate());
+    final other = manifest.audioOnly.where((s) => s.container.name.toLowerCase() != 'mp4').toList();
+    if (other.isNotEmpty) {
+      audios.add(other.withHighestBitrate());
     }
     return audios;
   }
@@ -924,7 +891,8 @@ class _DownloadBottomSheetState extends State<DownloadBottomSheet> with SingleTi
       ext: ext,
       thumbUrl: widget.video.thumbnails.highResUrl,
       totalBytes: streamInfo.size.totalBytes,
-      streamUrl: streamInfo.url,
+      streamInfo: streamInfo,
+      yt: widget.yt,
     );
 
     DownloadManager.addTask(task);
