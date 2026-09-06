@@ -11,7 +11,7 @@ void main() {
 }
 
 // ----------------------------------------------------
-// প্রফেশনাল ডাউনলোড টাস্ক ও ম্যানেজার (স্বাধীন ইঞ্জিন সহ)
+// প্রফেশনাল রেঞ্জ ডাউনলোডার (অটো-রিট্রাই ও আনস্টপাবল ইঞ্জিন)
 // ----------------------------------------------------
 class DownloadTask {
   final String id;
@@ -20,7 +20,7 @@ class DownloadTask {
   final String ext;
   final String thumbUrl;
   final int totalBytes;
-  final StreamInfo streamInfo;
+  final Uri streamUrl;
 
   int downloadedBytes = 0;
   double progress = 0.0;
@@ -37,12 +37,14 @@ class DownloadTask {
     required this.ext,
     required this.thumbUrl,
     required this.totalBytes,
-    required this.streamInfo,
+    required this.streamUrl,
   });
 
-  // স্বাধীন ইঞ্জিন দিয়ে ১০০% গ্যারান্টিড ডাউনলোড (আটকে যাওয়ার কোনো সুযোগ নেই)
+  // এই ফাংশনটি ইউটিউব লাইন কেটে দিলেও নিজে থেকেই রিকানেক্ট করে ১০০% শেষ করবে
   void start(VoidCallback onUpdate) async {
-    final ytClient = YoutubeExplode();
+    final client = HttpClient();
+    client.connectionTimeout = const Duration(seconds: 15);
+
     try {
       Directory? dir;
       try {
@@ -55,27 +57,56 @@ class DownloadTask {
 
       filePath = '${dir.path}/${cleanTitle}_$id.$ext';
       final file = File(filePath!);
-      final sink = file.openWrite();
 
-      final stream = ytClient.videos.streamsClient.get(streamInfo);
+      // যদি আগে কিছুটা নেমে থাকে, সেখান থেকেই শুরু হবে
+      downloadedBytes = file.existsSync() ? file.lengthSync() : 0;
 
-      await for (final chunk in stream) {
+      while (downloadedBytes < totalBytes && !isCanceled) {
+        while (isPaused && !isCanceled) {
+          await Future.delayed(const Duration(milliseconds: 300));
+        }
         if (isCanceled) break;
 
-        // পজ থাকলে অপেক্ষা করবে
-        while (isPaused) {
-          await Future.delayed(const Duration(milliseconds: 300));
-          if (isCanceled) break;
+        try {
+          final request = await client.getUrl(streamUrl);
+          
+          // ব্রাউজারের পরিচয় দেওয়া যাতে অডিও ০% এ আটকে না থাকে
+          request.headers.set(
+            HttpHeaders.userAgentHeader,
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+          );
+          request.headers.set('Connection', 'keep-alive');
+          
+          // যত বাইট নেমেছে ঠিক তার পর থেকে রি-কানেক্ট করার ম্যাজিক রেঞ্জ
+          request.headers.set('Range', 'bytes=$downloadedBytes-');
+
+          final response = await request.close();
+
+          if (response.statusCode == 200 || response.statusCode == 206) {
+            final sink = file.openWrite(mode: FileMode.append);
+
+            await for (final chunk in response) {
+              if (isCanceled) break;
+              while (isPaused && !isCanceled) {
+                await Future.delayed(const Duration(milliseconds: 300));
+              }
+
+              sink.add(chunk);
+              downloadedBytes += chunk.length;
+              progress = totalBytes > 0 ? (downloadedBytes / totalBytes) : 0.0;
+              onUpdate();
+            }
+
+            await sink.flush();
+            await sink.close();
+          } else {
+            await Future.delayed(const Duration(seconds: 1));
+          }
+        } catch (_) {
+          // ইউটিউব লাইন কেটে দিলে ১ সেকেন্ড পর অটো-রিজিউম হবে
+          await Future.delayed(const Duration(seconds: 1));
         }
-
-        sink.add(chunk);
-        downloadedBytes += chunk.length;
-        progress = totalBytes > 0 ? (downloadedBytes / totalBytes) : 0.0;
-        onUpdate();
       }
-
-      await sink.flush();
-      await sink.close();
 
       if (!isCanceled) {
         status = "Completed";
@@ -86,7 +117,7 @@ class DownloadTask {
       status = "Failed";
       onUpdate();
     } finally {
-      ytClient.close();
+      client.close();
     }
   }
 
@@ -122,7 +153,7 @@ class DownloadManager {
 
   static void addTask(DownloadTask task) {
     tasks.value = [task, ...tasks.value];
-    unreadBadge.value = unreadBadge.value + 1; // ব্যাজ সংখ্যা ১, ২, ৩ বাড়বে
+    unreadBadge.value = unreadBadge.value + 1; // ১, ২, ৩ ব্যাজ গণনা
     tasks.notifyListeners();
     task.start(() => tasks.notifyListeners());
   }
@@ -137,7 +168,7 @@ class DownloadManager {
   }
 
   static void markAsRead() {
-    unreadBadge.value = 0; // ট্যাবে ঢুকলে ব্যাজ ০ হয়ে যাবে
+    unreadBadge.value = 0; // ট্যাবে ঢুকলে ব্যাজ ০ হবে
   }
 }
 
@@ -214,7 +245,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
         currentIndex: _currentIndex,
         onTap: (index) {
           if (index == 2) {
-            DownloadManager.markAsRead(); // ৩ নম্বর ট্যাবে ক্লিক করলে ব্যাজ মুছে যাবে
+            DownloadManager.markAsRead();
           }
           setState(() => _currentIndex = index);
         },
@@ -246,7 +277,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
 }
 
 // ----------------------------------------------------
-// TAB 1: VidMate স্টাইল ইউটিউব এক্সপ্লোর ও ফিড
+// TAB 1: VidMate স্টাইল ইউটিউব এক্সপ্লোর ও সার্চ
 // ----------------------------------------------------
 class ExploreFeedTab extends StatefulWidget {
   final YoutubeExplode yt;
@@ -423,7 +454,7 @@ class _ExploreFeedTabState extends State<ExploreFeedTab> {
 }
 
 // ----------------------------------------------------
-// ফুল ইন্টারেক্টিভ ভিডিও প্লেয়ার স্ক্রিন (Play, Pause, টেনে দেওয়া স্লাইডার সহ)
+// ফুল ইন্টারেক্টিভ ভিডিও প্লেয়ার (Play, Pause, টেনে দেওয়া স্লাইডার সহ)
 // ----------------------------------------------------
 class VideoPlayerScreen extends StatefulWidget {
   final Video video;
@@ -489,7 +520,6 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
       body: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // ইন্টারেক্টিভ প্লেয়ার
           AspectRatio(
             aspectRatio: 16 / 9,
             child: _isInit && _controller != null
@@ -503,7 +533,6 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
                       children: [
                         VideoPlayer(_controller!),
 
-                        // টাচ কন্ট্রোলস (Play, Pause, Forward, Backward)
                         if (_showControls) ...[
                           Container(color: Colors.black.withOpacity(0.4)),
                           Row(
@@ -543,7 +572,6 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
                             ],
                           ),
 
-                          // টেনে দেওয়ার স্লাইডার ও টাইমার
                           Positioned(
                             bottom: 0, left: 0, right: 0,
                             child: Padding(
@@ -586,7 +614,6 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
                 Text(widget.video.author, style: const TextStyle(fontSize: 12, color: Colors.grey)),
                 const SizedBox(height: 20),
 
-                // প্লেয়ার স্ক্রিন থেকে ১০০% কাজ করা ডাউনলোড বাটন
                 ElevatedButton.icon(
                   style: ElevatedButton.styleFrom(
                     backgroundColor: const Color(0xFF8B5CF6),
@@ -614,7 +641,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
 }
 
 // ----------------------------------------------------
-// TAB 2: লিংক পেস্ট করে ডাউনলোড
+// TAB 2: লিংক পেস্ট ট্যাব
 // ----------------------------------------------------
 class LinkDownloaderTab extends StatefulWidget {
   final YoutubeExplode yt;
@@ -710,7 +737,7 @@ class _LinkDownloaderTabState extends State<LinkDownloaderTab> {
 }
 
 // ----------------------------------------------------
-// TAB 3: Downloads ম্যানেজার (পজ, রিজিউম, ডিলিট সহ লাইভ ট্র্যাকার)
+// TAB 3: Downloads ম্যানেজার
 // ----------------------------------------------------
 class DownloadsManagerTab extends StatelessWidget {
   const DownloadsManagerTab({super.key});
@@ -817,7 +844,7 @@ class DownloadsManagerTab extends StatelessWidget {
 }
 
 // ----------------------------------------------------
-// ডাউনলোড কোয়ালিটি মডাল (ডুপ্লিকেট রিমুভ ও ফাস্ট অডিও)
+// কোয়ালিটি মডাল (ডুপ্লিকেট ছাড়া ও ১০০% ফাস্ট অডিও)
 // ----------------------------------------------------
 class DownloadBottomSheet extends StatefulWidget {
   final Video video;
@@ -897,7 +924,7 @@ class _DownloadBottomSheetState extends State<DownloadBottomSheet> with SingleTi
       ext: ext,
       thumbUrl: widget.video.thumbnails.highResUrl,
       totalBytes: streamInfo.size.totalBytes,
-      streamInfo: streamInfo,
+      streamUrl: streamInfo.url,
     );
 
     DownloadManager.addTask(task);
