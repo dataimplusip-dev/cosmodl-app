@@ -2,7 +2,6 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:youtube_explode_dart/youtube_explode_dart.dart';
 import 'package:path_provider/path_provider.dart';
-import 'package:permission_handler/permission_handler.dart';
 
 void main() {
   runApp(const CosmoDLApp());
@@ -74,14 +73,12 @@ class _HomeScreenState extends State<HomeScreen> {
     } catch (e) {
       setState(() => _isLoading = false);
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('ভিডিওর তথ্য আনা যায়নি: $e')),
+        SnackBar(content: Text('ভিডিওর তথ্য পাওয়া যায়নি: $e')),
       );
     }
   }
 
   Future<void> _downloadStream(StreamInfo streamInfo, String ext) async {
-    await Permission.storage.request();
-
     setState(() {
       _isDownloading = true;
       _progress = 0.0;
