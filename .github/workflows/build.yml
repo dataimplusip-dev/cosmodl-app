@@ -31,7 +31,7 @@ jobs:
           flutter create --org com.naim.cosmodl --project-name cosmodl .
           rm -rf lib
           cp -r /tmp/mycode/lib .
-          flutter pub add youtube_explode_dart path_provider
+          flutter pub add youtube_explode_dart path_provider video_player
 
       - name: Setup YouTube Share Intent & Permissions
         run: |
