@@ -33,30 +33,86 @@ jobs:
           cp -r /tmp/mycode/lib .
           flutter pub add youtube_explode_dart path_provider
 
-      - name: Setup Android Permissions & MinSdk
+      - name: Setup Android Share Intent & Permissions
         run: |
           python3 << 'EOF'
           import os, re
 
-          # Add Internet permission to AndroidManifest.xml
+          # 1. AndroidManifest-এ Share Intent Filter যোগ করা
           manifest_path = 'android/app/src/main/AndroidManifest.xml'
           if os.path.exists(manifest_path):
               with open(manifest_path, 'r') as f:
                   content = f.read()
+              
+              share_intent = """            <intent-filter>
+                  <action android:name="android.intent.action.SEND" />
+                  <category android:name="android.intent.category.DEFAULT" />
+                  <data android:mimeType="text/plain" />
+              </intent-filter>
+          """
+              if '</activity>' in content and 'android.intent.action.SEND' not in content:
+                  content = content.replace('</activity>', share_intent + '        </activity>')
+
               perms = '    <uses-permission android:name="android.permission.INTERNET"/>\n'
               if '<application' in content and 'android.permission.INTERNET' not in content:
                   content = content.replace('<application', perms + '    <application')
-                  with open(manifest_path, 'w') as f:
-                      f.write(content)
 
-          # Cleanly ensure minSdk 21
+              with open(manifest_path, 'w') as f:
+                  f.write(content)
+
+          # 2. MainActivity-তে Share হ্যান্ডলার কোড যোগ করা
+          kt_path = 'android/app/src/main/kotlin/com/naim/cosmodl/MainActivity.kt'
+          if os.path.exists(kt_path):
+              kt_code = """package com.naim.cosmodl
+
+          import android.content.Intent
+          import android.os.Bundle
+          import io.flutter.embedding.android.FlutterActivity
+          import io.flutter.embedding.engine.FlutterEngine
+          import io.flutter.plugin.common.MethodChannel
+
+          class MainActivity: FlutterActivity() {
+              private val CHANNEL = "app.cosmodl/share"
+              private var sharedText: String? = null
+
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+                  handleIntent(intent)
+              }
+
+              override fun onNewIntent(intent: Intent) {
+                  super.onNewIntent(intent)
+                  handleIntent(intent)
+              }
+
+              private fun handleIntent(intent: Intent?) {
+                  if (intent?.action == Intent.ACTION_SEND && intent.type == "text/plain") {
+                      sharedText = intent.getStringExtra(Intent.EXTRA_TEXT)
+                  }
+              }
+
+              override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
+                  super.configureFlutterEngine(flutterEngine)
+                  MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL).setMethodCallHandler { call, result ->
+                      if (call.method == "getSharedText") {
+                          result.success(sharedText)
+                          sharedText = null
+                      } else {
+                          result.notImplemented()
+                      }
+                  }
+              }
+          }
+          """
+              with open(kt_path, 'w') as f:
+                  f.write(kt_code)
+
+          # 3. minSdk 21 সেট করা
           for p in ['android/app/build.gradle', 'android/app/build.gradle.kts']:
               if os.path.exists(p):
-                  with open(p, 'r') as f:
-                      c = f.read()
+                  with open(p, 'r') as f: c = f.read()
                   c = re.sub(r'flutter\.minSdk(Version)?', '21', c)
-                  with open(p, 'w') as f:
-                      f.write(c)
+                  with open(p, 'w') as f: f.write(c)
           EOF
 
       - name: Build Release APK
