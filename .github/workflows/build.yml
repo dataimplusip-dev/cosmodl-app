@@ -36,7 +36,7 @@ jobs:
       - name: Fix Android Permissions & MinSdk
         run: |
           python3 << 'EOF'
-          import os
+          import os, re
 
           # Add Permissions to AndroidManifest.xml
           manifest_path = 'android/app/src/main/AndroidManifest.xml'
@@ -51,13 +51,12 @@ jobs:
                   with open(manifest_path, 'w') as f:
                       f.write(content)
 
-          # Ensure minSdk is 21
+          # Cleanly replace flutter.minSdkVersion with 21 (no syntax errors)
           for p in ['android/app/build.gradle', 'android/app/build.gradle.kts']:
               if os.path.exists(p):
                   with open(p, 'r') as f:
                       c = f.read()
-                  c = c.replace('minSdkVersion = flutter.minSdkVersion', 'minSdkVersion = 21')
-                  c = c.replace('minSdk = flutter.minSdk', 'minSdk = 21')
+                  c = re.sub(r'flutter\.minSdk(Version)?', '21', c)
                   with open(p, 'w') as f:
                       f.write(c)
           EOF
