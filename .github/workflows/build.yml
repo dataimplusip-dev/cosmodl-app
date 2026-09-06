@@ -31,27 +31,25 @@ jobs:
           flutter create --org com.naim.cosmodl --project-name cosmodl .
           rm -rf lib
           cp -r /tmp/mycode/lib .
-          flutter pub add youtube_explode_dart path_provider permission_handler
+          flutter pub add youtube_explode_dart path_provider
 
-      - name: Fix Android Permissions & MinSdk
+      - name: Setup Android Permissions & MinSdk
         run: |
           python3 << 'EOF'
           import os, re
 
-          # Add Permissions to AndroidManifest.xml
+          # Add Internet permission to AndroidManifest.xml
           manifest_path = 'android/app/src/main/AndroidManifest.xml'
           if os.path.exists(manifest_path):
               with open(manifest_path, 'r') as f:
                   content = f.read()
-              perms = """    <uses-permission android:name="android.permission.INTERNET"/>
-              <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"/>
-              <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"/>\n"""
+              perms = '    <uses-permission android:name="android.permission.INTERNET"/>\n'
               if '<application' in content and 'android.permission.INTERNET' not in content:
                   content = content.replace('<application', perms + '    <application')
                   with open(manifest_path, 'w') as f:
                       f.write(content)
 
-          # Cleanly replace flutter.minSdkVersion with 21 (no syntax errors)
+          # Cleanly ensure minSdk 21
           for p in ['android/app/build.gradle', 'android/app/build.gradle.kts']:
               if os.path.exists(p):
                   with open(p, 'r') as f:
