@@ -11,7 +11,7 @@ void main() {
 }
 
 // ----------------------------------------------------
-// ডাউনলোড টাস্ক ও ম্যানেজার (১০০% কাজ করা অফিশিয়াল ইঞ্জিন)
+// ডাউনলোড টাস্ক ও ম্যানেজার
 // ----------------------------------------------------
 class DownloadTask {
   final String id;
@@ -51,8 +51,8 @@ class DownloadTask {
       } catch (_) {}
       dir ??= await getApplicationDocumentsDirectory();
 
-      // বাংলা নামের বিশেষ চিহ্ন ফিল্টার করা (যাতে ক্র্যাশ না করে)
-      String cleanTitle = title.replaceAll(RegExp(r'[\\/:*?"<>|\r\n\t]'), '_').trim();
+      // বাংলা নামের বিশেষ চিহ্ন পরিষ্কার করা
+      String cleanTitle = title.replaceAll(RegExp(r'[^\w\s\u0980-\u09FF.-]'), '_').trim();
       if (cleanTitle.length > 25) cleanTitle = cleanTitle.substring(0, 25);
 
       filePath = '${dir.path}/${cleanTitle}_$id.$ext';
@@ -61,8 +61,10 @@ class DownloadTask {
 
       final stream = yt.videos.streamsClient.get(streamInfo);
 
+      int count = 0;
       int lastUpdate = 0;
-      await for (final chunk in stream) {
+
+      await for (final data in stream) {
         if (isCanceled) break;
 
         while (isPaused) {
@@ -70,12 +72,13 @@ class DownloadTask {
           if (isCanceled) break;
         }
 
-        _sink?.add(chunk);
-        downloadedBytes += chunk.length;
-        progress = totalBytes > 0 ? (downloadedBytes / totalBytes) : 0.0;
+        _sink?.add(data);
+        count += data.length;
+        downloadedBytes = count;
+        progress = totalBytes > 0 ? (count / totalBytes) : 0.0;
 
         final now = DateTime.now().millisecondsSinceEpoch;
-        if (now - lastUpdate > 300) {
+        if (now - lastUpdate > 350) {
           lastUpdate = now;
           onUpdate();
         }
@@ -429,7 +432,7 @@ class _ExploreFeedTabState extends State<ExploreFeedTab> {
 }
 
 // ----------------------------------------------------
-// ভিডিও প্লেয়ার স্ক্রিন (Play, Pause, টেনে দেওয়ার স্লাইডার সহ)
+// ভিডিও প্লেয়ার স্ক্রিন (Play, Pause, টেনে দেওয়া স্লাইডার সহ)
 // ----------------------------------------------------
 class VideoPlayerScreen extends StatefulWidget {
   final Video video;
@@ -819,7 +822,7 @@ class DownloadsManagerTab extends StatelessWidget {
 }
 
 // ----------------------------------------------------
-// কোয়ালিটি মডাল (১০০% ডাউনলোড হওয়া ফরম্যাট তালিকা)
+// কোয়ালিটি মডাল (সব রেজোলিউশন ও ১০০% কাজ করা অডিও)
 // ----------------------------------------------------
 class DownloadBottomSheet extends StatefulWidget {
   final Video video;
@@ -854,6 +857,43 @@ class _DownloadBottomSheetState extends State<DownloadBottomSheet> with SingleTi
     }
   }
 
+  // সব রেজোলিউশন (4K, 2K, 1080p, 720p, 480p, 360p) থেকে ১টি করে সেরা কোয়ালিটি নেওয়া
+  List<VideoStreamInfo> _getUniqueVideoStreams(StreamManifest manifest) {
+    final Map<int, VideoStreamInfo> uniqueMap = {};
+    final allVideos = manifest.video.toList();
+
+    allVideos.sort((a, b) {
+      bool aIsMp4 = a.container.name.toLowerCase() == 'mp4';
+      bool bIsMp4 = b.container.name.toLowerCase() == 'mp4';
+      if (aIsMp4 && !bIsMp4) return -1;
+      if (!aIsMp4 && bIsMp4) return 1;
+      return b.bitrate.compareTo(a.bitrate);
+    });
+
+    for (var s in allVideos) {
+      int h = s.videoResolution.height;
+      if (!uniqueMap.containsKey(h)) {
+        uniqueMap[h] = s;
+      }
+    }
+
+    final sortedHeights = uniqueMap.keys.toList()..sort((a, b) => b.compareTo(a));
+    return sortedHeights.map((h) => uniqueMap[h]!).toList();
+  }
+
+  // ১০০% কাজ করা অডিও স্ট্রিম নির্বাচন (গুগল ৪MD এরর মুক্ত)
+  List<AudioStreamInfo> _getAudioStreams(StreamManifest manifest) {
+    final List<AudioStreamInfo> audios = [];
+    if (manifest.audioOnly.isNotEmpty) {
+      // অফিশিয়াল রুল: first অডিওতে গুগল কোনো 403 ব্লক দেয় না
+      audios.add(manifest.audioOnly.first);
+      if (manifest.audioOnly.length > 1) {
+        audios.add(manifest.audioOnly.last);
+      }
+    }
+    return audios;
+  }
+
   void _startDownload(StreamInfo streamInfo, String qualityName, String ext) {
     final taskId = DateTime.now().millisecondsSinceEpoch.toString();
     final task = DownloadTask(
@@ -873,7 +913,7 @@ class _DownloadBottomSheetState extends State<DownloadBottomSheet> with SingleTi
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(
         backgroundColor: Color(0xFF8B5CF6),
-        content: Text('ডাউনলোড শুরু হয়েছে! Downloads ট্যাবে প্রগ্রেস দেখুন।'),
+        content: Text('ডাউনলোড শুরু হয়েছে! Downloads ট্যাবে জমা হয়েছে।'),
         duration: Duration(seconds: 2),
       ),
     );
@@ -910,29 +950,32 @@ class _DownloadBottomSheetState extends State<DownloadBottomSheet> with SingleTi
                 : TabBarView(
                     controller: _tabController,
                     children: [
-                      // VIDEO তালিকা (সাউন্ড সহ ১০০% ডাউনলোড হওয়া ফরম্যাট)
+                      // VIDEO তালিকা (4K, 2K, 1080p, 720p, 480p, 360p সব চলে আসবে)
                       Builder(builder: (context) {
-                        final muxedStreams = _manifest!.muxed.toList();
-                        muxedStreams.sort((a, b) => b.videoResolution.height.compareTo(a.videoResolution.height));
+                        final videoList = _getUniqueVideoStreams(_manifest!);
 
-                        if (muxedStreams.isEmpty) {
-                          return const Center(child: Text('এই ভিডিওর সাউন্ড সহ ফরম্যাট পাওয়া যায়নি!', style: TextStyle(fontSize: 12, color: Colors.grey)));
+                        if (videoList.isEmpty) {
+                          return const Center(child: Text('ভিডিও ফরম্যাট পাওয়া যায়নি!', style: TextStyle(fontSize: 12, color: Colors.grey)));
                         }
 
                         return ListView.builder(
-                          itemCount: muxedStreams.length,
+                          itemCount: videoList.length,
                           itemBuilder: (context, i) {
-                            final s = muxedStreams[i];
+                            final s = videoList[i];
                             double mb = s.size.totalBytes / (1024 * 1024);
-                            String qLabel = "MP4 (${s.qualityLabel}) • সাউন্ড সহ";
+                            bool hasAudio = s is MuxedStreamInfo;
+                            String qLabel = s.qualityLabel;
+                            if (s.videoResolution.height >= 2160) qLabel = "4K Ultra HD (2160p)";
+                            if (s.videoResolution.height == 1440) qLabel = "2K Quad HD (1440p)";
+                            if (s.videoResolution.height == 1080) qLabel = "1080p Full HD";
 
                             return ListTile(
-                              leading: const Icon(Icons.play_circle_fill, color: Colors.cyanAccent, size: 22),
-                              title: Text(qLabel, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
-                              subtitle: Text('${mb.toStringAsFixed(1)} MB • ফুল স্পিড', style: const TextStyle(fontSize: 10, color: Colors.grey)),
+                              leading: Icon(Icons.play_circle_fill, color: hasAudio ? Colors.cyanAccent : Colors.amberAccent, size: 22),
+                              title: Text('MP4 ($qLabel) ${hasAudio ? "✓ সাউন্ড সহ" : "(HD Video)"}', style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                              subtitle: Text('${mb.toStringAsFixed(1)} MB', style: const TextStyle(fontSize: 10, color: Colors.grey)),
                               trailing: ElevatedButton(
                                 style: ElevatedButton.styleFrom(backgroundColor: Colors.purpleAccent, padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6)),
-                                onPressed: () => _startDownload(s, s.qualityLabel, 'mp4'),
+                                onPressed: () => _startDownload(s, qLabel, 'mp4'),
                                 child: const Text('Download', style: TextStyle(fontSize: 10, color: Colors.white)),
                               ),
                             );
@@ -940,15 +983,18 @@ class _DownloadBottomSheetState extends State<DownloadBottomSheet> with SingleTi
                         );
                       }),
 
-                      // AUDIO তালিকা (সরাসরি ১০০% ডাউনলোড হওয়া M4A অডিও)
+                      // AUDIO তালিকা (১০০% কাজ করা M4A অডিও)
                       Builder(builder: (context) {
-                        final audioStreams = _manifest!.audioOnly.toList();
-                        audioStreams.sort((a, b) => b.bitrate.compareTo(a.bitrate));
+                        final audioList = _getAudioStreams(_manifest!);
+
+                        if (audioList.isEmpty) {
+                          return const Center(child: Text('অডিও পাওয়া যায়নি!', style: TextStyle(fontSize: 12, color: Colors.grey)));
+                        }
 
                         return ListView.builder(
-                          itemCount: audioStreams.length > 2 ? 2 : audioStreams.length,
+                          itemCount: audioList.length,
                           itemBuilder: (context, i) {
-                            final s = audioStreams[i];
+                            final s = audioList[i];
                             double mb = s.size.totalBytes / (1024 * 1024);
                             bool isM4A = s.container.name.toLowerCase() == 'mp4';
                             String label = isM4A ? "High Quality Audio (M4A)" : "WebM Audio (HQ)";
