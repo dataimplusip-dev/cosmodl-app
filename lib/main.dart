@@ -11,18 +11,17 @@ void main() {
 }
 
 // ----------------------------------------------------
-// অটো-রিফ্রেশ রেঞ্জ ডাউনলোডার (২০ MB লিমিট বাইপাস ইঞ্জিন)
+// ডাউনলোড টাস্ক ও ম্যানেজার (১০০% কাজ করা অফিশিয়াল ইঞ্জিন)
 // ----------------------------------------------------
 class DownloadTask {
   final String id;
-  final String videoId;
   final String title;
   final String quality;
   final String ext;
   final String thumbUrl;
   final int totalBytes;
-  final bool isAudio;
-  final int targetHeight;
+  final StreamInfo streamInfo;
+  final YoutubeExplode yt;
 
   int downloadedBytes = 0;
   double progress = 0.0;
@@ -31,22 +30,20 @@ class DownloadTask {
 
   bool isPaused = false;
   bool isCanceled = false;
+  IOSink? _sink;
 
   DownloadTask({
     required this.id,
-    required this.videoId,
     required this.title,
     required this.quality,
     required this.ext,
     required this.thumbUrl,
     required this.totalBytes,
-    required this.isAudio,
-    required this.targetHeight,
+    required this.streamInfo,
+    required this.yt,
   });
 
-  // ২০ MB লিমিট বাইপাস লুপ: ইউটিউব লাইন কাটলে অটো ফ্রেশ লিংক নিয়ে জোড়া লাগাবে
   void start(VoidCallback onUpdate) async {
-    final ytClient = YoutubeExplode();
     try {
       Directory? dir;
       try {
@@ -54,99 +51,47 @@ class DownloadTask {
       } catch (_) {}
       dir ??= await getApplicationDocumentsDirectory();
 
-      String cleanTitle = title.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_').trim();
-      if (cleanTitle.length > 30) cleanTitle = cleanTitle.substring(0, 30);
+      // বাংলা নামের বিশেষ চিহ্ন ফিল্টার করা (যাতে ক্র্যাশ না করে)
+      String cleanTitle = title.replaceAll(RegExp(r'[\\/:*?"<>|\r\n\t]'), '_').trim();
+      if (cleanTitle.length > 25) cleanTitle = cleanTitle.substring(0, 25);
 
       filePath = '${dir.path}/${cleanTitle}_$id.$ext';
       final file = File(filePath!);
+      _sink = file.openWrite(mode: FileMode.writeOnlyAppend);
 
-      downloadedBytes = file.existsSync() ? file.lengthSync() : 0;
+      final stream = yt.videos.streamsClient.get(streamInfo);
 
-      int maxRetries = 20; // সর্বোচ্চ ২০ বার ফ্রেশ লিংক রিফ্রেশ করার ক্ষমতা
-      int retryCount = 0;
-
-      while (downloadedBytes < totalBytes && !isCanceled && retryCount < maxRetries) {
-        while (isPaused && !isCanceled) {
-          await Future.delayed(const Duration(milliseconds: 300));
-        }
+      int lastUpdate = 0;
+      await for (final chunk in stream) {
         if (isCanceled) break;
 
-        try {
-          // ১. প্রতি সেগমেন্টের জন্য নতুন ফ্রেশ লিংক আনা
-          final manifest = await ytClient.videos.streamsClient.getManifest(videoId);
-          Uri currentStreamUrl;
+        while (isPaused) {
+          await Future.delayed(const Duration(milliseconds: 300));
+          if (isCanceled) break;
+        }
 
-          if (isAudio) {
-            final aStreams = manifest.audioOnly.where((s) => s.container.name.toLowerCase() == 'mp4').toList();
-            currentStreamUrl = aStreams.isNotEmpty ? aStreams.withHighestBitrate().url : manifest.audioOnly.withHighestBitrate().url;
-          } else {
-            final vStreams = manifest.video.where((s) => s.videoResolution.height == targetHeight).toList();
-            currentStreamUrl = vStreams.isNotEmpty ? vStreams.first.url : manifest.video.first.url;
-          }
+        _sink?.add(chunk);
+        downloadedBytes += chunk.length;
+        progress = totalBytes > 0 ? (downloadedBytes / totalBytes) : 0.0;
 
-          // ২. আসল ক্রোম ব্রাউজার পরিচয় ও যেখান থেকে থেমেছিল সেই বাইট থেকে রিকোয়েস্ট
-          final client = HttpClient();
-          client.connectionTimeout = const Duration(seconds: 15);
-          final request = await client.getUrl(currentStreamUrl);
-
-          request.headers.set(
-            HttpHeaders.userAgentHeader,
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-          );
-          request.headers.set('Connection', 'keep-alive');
-          request.headers.set('Range', 'bytes=$downloadedBytes-');
-
-          final response = await request.close();
-
-          if (response.statusCode == 200 || response.statusCode == 206) {
-            final sink = file.openWrite(mode: FileMode.append);
-            int lastUpdate = 0;
-
-            await for (final chunk in response) {
-              if (isCanceled) break;
-              while (isPaused && !isCanceled) {
-                await Future.delayed(const Duration(milliseconds: 300));
-              }
-
-              sink.add(chunk);
-              downloadedBytes += chunk.length;
-              progress = totalBytes > 0 ? (downloadedBytes / totalBytes) : 0.0;
-
-              final now = DateTime.now().millisecondsSinceEpoch;
-              if (now - lastUpdate > 350) {
-                lastUpdate = now;
-                onUpdate();
-              }
-            }
-
-            await sink.flush();
-            await sink.close();
-          }
-
-          client.close();
-
-          if (downloadedBytes >= totalBytes) break;
-
-        } catch (e) {
-          // ইউটিউব লাইন কেটে দিলে ১ সেকেন্ড অপেক্ষা করে আবার ফ্রেশ লিংক দিয়ে ট্রাই করবে
-          retryCount++;
-          await Future.delayed(const Duration(seconds: 1));
+        final now = DateTime.now().millisecondsSinceEpoch;
+        if (now - lastUpdate > 300) {
+          lastUpdate = now;
+          onUpdate();
         }
       }
 
-      if (!isCanceled && (downloadedBytes >= (totalBytes * 0.95) || downloadedBytes >= totalBytes)) {
+      await _sink?.flush();
+      await _sink?.close();
+
+      if (!isCanceled) {
         status = "Completed";
         progress = 1.0;
-        onUpdate();
-      } else if (!isCanceled) {
-        status = "Failed";
         onUpdate();
       }
     } catch (e) {
       status = "Failed";
       onUpdate();
-    } finally {
-      ytClient.close();
     }
   }
 
@@ -162,11 +107,12 @@ class DownloadTask {
     onUpdate();
   }
 
-  void cancelAndDelete(VoidCallback onUpdate) {
+  void cancelAndDelete(VoidCallback onUpdate) async {
     isCanceled = true;
     isPaused = false;
     status = "Deleted";
     try {
+      await _sink?.close();
       if (filePath != null) {
         final f = File(filePath!);
         if (f.existsSync()) f.deleteSync();
@@ -178,12 +124,11 @@ class DownloadTask {
 
 class DownloadManager {
   static final ValueNotifier<List<DownloadTask>> tasks = ValueNotifier<List<DownloadTask>>([]);
-
-  // রানিং ডাউনলোড কাউন্টার (১, ২, ৩...)
-  static int get activeCount => tasks.value.where((t) => t.status == "Downloading" || t.status == "Paused").length;
+  static final ValueNotifier<int> unreadBadge = ValueNotifier<int>(0);
 
   static void addTask(DownloadTask task) {
     tasks.value = [task, ...tasks.value];
+    unreadBadge.value = unreadBadge.value + 1; // ১, ২, ৩ লাইভ ব্যাজ
     tasks.notifyListeners();
     task.start(() => tasks.notifyListeners());
   }
@@ -195,6 +140,10 @@ class DownloadManager {
       tasks.value = list.where((t) => t.id != id).toList();
       tasks.notifyListeners();
     });
+  }
+
+  static void markAsRead() {
+    unreadBadge.value = 0; // Downloads ট্যাবে চাপ দিলে ব্যাজ ০ হবে
   }
 }
 
@@ -269,7 +218,12 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
       ),
       bottomNavigationBar: BottomNavigationBar(
         currentIndex: _currentIndex,
-        onTap: (index) => setState(() => _currentIndex = index),
+        onTap: (index) {
+          if (index == 2) {
+            DownloadManager.markAsRead();
+          }
+          setState(() => _currentIndex = index);
+        },
         backgroundColor: const Color(0xFF070D1E),
         selectedItemColor: const Color(0xFF8B5CF6),
         unselectedItemColor: Colors.grey,
@@ -278,10 +232,9 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
           const BottomNavigationBarItem(icon: Icon(Icons.explore), label: "Explore"),
           const BottomNavigationBarItem(icon: Icon(Icons.link), label: "Paste Link"),
           BottomNavigationBarItem(
-            icon: ValueListenableBuilder<List<DownloadTask>>(
-              valueListenable: DownloadManager.tasks,
-              builder: (context, tasks, child) {
-                final count = DownloadManager.activeCount;
+            icon: ValueListenableBuilder<int>(
+              valueListenable: DownloadManager.unreadBadge,
+              builder: (context, count, child) {
                 return Badge(
                   label: Text('$count', style: const TextStyle(fontSize: 10, color: Colors.white, fontWeight: FontWeight.bold)),
                   isLabelVisible: count > 0,
@@ -317,7 +270,7 @@ class _ExploreFeedTabState extends State<ExploreFeedTab> {
   @override
   void initState() {
     super.initState();
-    _loadVideos('trending bangla music');
+    _loadVideos('trending bangla song');
   }
 
   Future<void> _loadVideos(String query) async {
@@ -359,7 +312,7 @@ class _ExploreFeedTabState extends State<ExploreFeedTab> {
         actions: const [
           Padding(
             padding: EdgeInsets.only(right: 14.0),
-            child: Center(child: Text('By Naim Islam', style: TextStyle(fontSize: 10, color: Colors.purpleAccent, fontWeight: FontWeight.bold))),
+            child: Center(child: Text('Creator by Naim Islam', style: TextStyle(fontSize: 10, color: Colors.purpleAccent, fontWeight: FontWeight.bold))),
           )
         ],
       ),
@@ -476,7 +429,7 @@ class _ExploreFeedTabState extends State<ExploreFeedTab> {
 }
 
 // ----------------------------------------------------
-// ভিডিও প্লেয়ার স্ক্রিন (Play, Pause, টেনে দেওয়া স্লাইডার সহ)
+// ভিডিও প্লেয়ার স্ক্রিন (Play, Pause, টেনে দেওয়ার স্লাইডার সহ)
 // ----------------------------------------------------
 class VideoPlayerScreen extends StatefulWidget {
   final Video video;
@@ -866,7 +819,7 @@ class DownloadsManagerTab extends StatelessWidget {
 }
 
 // ----------------------------------------------------
-// কোয়ালিটি মডাল
+// কোয়ালিটি মডাল (১০০% ডাউনলোড হওয়া ফরম্যাট তালিকা)
 // ----------------------------------------------------
 class DownloadBottomSheet extends StatefulWidget {
   final Video video;
@@ -901,54 +854,17 @@ class _DownloadBottomSheetState extends State<DownloadBottomSheet> with SingleTi
     }
   }
 
-  List<VideoStreamInfo> _getUniqueVideoStreams(StreamManifest manifest) {
-    final Map<int, VideoStreamInfo> uniqueMap = {};
-    final allVideos = manifest.video.toList();
-
-    allVideos.sort((a, b) {
-      bool aIsMp4 = a.container.name.toLowerCase() == 'mp4';
-      bool bIsMp4 = b.container.name.toLowerCase() == 'mp4';
-      if (aIsMp4 && !bIsMp4) return -1;
-      if (!aIsMp4 && bIsMp4) return 1;
-      return b.bitrate.compareTo(a.bitrate);
-    });
-
-    for (var s in allVideos) {
-      int h = s.videoResolution.height;
-      if (!uniqueMap.containsKey(h)) {
-        uniqueMap[h] = s;
-      }
-    }
-
-    final sortedHeights = uniqueMap.keys.toList()..sort((a, b) => b.compareTo(a));
-    return sortedHeights.map((h) => uniqueMap[h]!).toList();
-  }
-
-  List<AudioStreamInfo> _getAudioStreams(StreamManifest manifest) {
-    final List<AudioStreamInfo> audios = [];
-    final m4a = manifest.audioOnly.where((s) => s.container.name.toLowerCase() == 'mp4').toList();
-    if (m4a.isNotEmpty) {
-      audios.add(m4a.withHighestBitrate());
-    }
-    final other = manifest.audioOnly.where((s) => s.container.name.toLowerCase() != 'mp4').toList();
-    if (other.isNotEmpty) {
-      audios.add(other.withHighestBitrate());
-    }
-    return audios;
-  }
-
-  void _startDownload(StreamInfo streamInfo, String qualityName, String ext, bool isAudio, int targetHeight) {
+  void _startDownload(StreamInfo streamInfo, String qualityName, String ext) {
     final taskId = DateTime.now().millisecondsSinceEpoch.toString();
     final task = DownloadTask(
       id: taskId,
-      videoId: widget.video.id.value,
       title: widget.video.title,
       quality: qualityName,
       ext: ext,
       thumbUrl: widget.video.thumbnails.highResUrl,
       totalBytes: streamInfo.size.totalBytes,
-      isAudio: isAudio,
-      targetHeight: targetHeight,
+      streamInfo: streamInfo,
+      yt: widget.yt,
     );
 
     DownloadManager.addTask(task);
@@ -994,25 +910,29 @@ class _DownloadBottomSheetState extends State<DownloadBottomSheet> with SingleTi
                 : TabBarView(
                     controller: _tabController,
                     children: [
+                      // VIDEO তালিকা (সাউন্ড সহ ১০০% ডাউনলোড হওয়া ফরম্যাট)
                       Builder(builder: (context) {
-                        final videoList = _getUniqueVideoStreams(_manifest!);
+                        final muxedStreams = _manifest!.muxed.toList();
+                        muxedStreams.sort((a, b) => b.videoResolution.height.compareTo(a.videoResolution.height));
+
+                        if (muxedStreams.isEmpty) {
+                          return const Center(child: Text('এই ভিডিওর সাউন্ড সহ ফরম্যাট পাওয়া যায়নি!', style: TextStyle(fontSize: 12, color: Colors.grey)));
+                        }
+
                         return ListView.builder(
-                          itemCount: videoList.length,
+                          itemCount: muxedStreams.length,
                           itemBuilder: (context, i) {
-                            final s = videoList[i];
+                            final s = muxedStreams[i];
                             double mb = s.size.totalBytes / (1024 * 1024);
-                            String qLabel = s.qualityLabel;
-                            if (s.videoResolution.height >= 2160) qLabel = "4K Ultra HD (2160p)";
-                            if (s.videoResolution.height == 1440) qLabel = "2K Quad HD (1440p)";
-                            if (s.videoResolution.height == 1080) qLabel = "1080p Full HD";
+                            String qLabel = "MP4 (${s.qualityLabel}) • সাউন্ড সহ";
 
                             return ListTile(
                               leading: const Icon(Icons.play_circle_fill, color: Colors.cyanAccent, size: 22),
                               title: Text(qLabel, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
-                              subtitle: Text('${mb.toStringAsFixed(1)} MB • MP4', style: const TextStyle(fontSize: 10, color: Colors.grey)),
+                              subtitle: Text('${mb.toStringAsFixed(1)} MB • ফুল স্পিড', style: const TextStyle(fontSize: 10, color: Colors.grey)),
                               trailing: ElevatedButton(
                                 style: ElevatedButton.styleFrom(backgroundColor: Colors.purpleAccent, padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6)),
-                                onPressed: () => _startDownload(s, qLabel, 'mp4', false, s.videoResolution.height),
+                                onPressed: () => _startDownload(s, s.qualityLabel, 'mp4'),
                                 child: const Text('Download', style: TextStyle(fontSize: 10, color: Colors.white)),
                               ),
                             );
@@ -1020,15 +940,18 @@ class _DownloadBottomSheetState extends State<DownloadBottomSheet> with SingleTi
                         );
                       }),
 
+                      // AUDIO তালিকা (সরাসরি ১০০% ডাউনলোড হওয়া M4A অডিও)
                       Builder(builder: (context) {
-                        final audioList = _getAudioStreams(_manifest!);
+                        final audioStreams = _manifest!.audioOnly.toList();
+                        audioStreams.sort((a, b) => b.bitrate.compareTo(a.bitrate));
+
                         return ListView.builder(
-                          itemCount: audioList.length,
+                          itemCount: audioStreams.length > 2 ? 2 : audioStreams.length,
                           itemBuilder: (context, i) {
-                            final s = audioList[i];
+                            final s = audioStreams[i];
                             double mb = s.size.totalBytes / (1024 * 1024);
                             bool isM4A = s.container.name.toLowerCase() == 'mp4';
-                            String label = isM4A ? "High Quality Audio (M4A)" : "WebM Audio";
+                            String label = isM4A ? "High Quality Audio (M4A)" : "WebM Audio (HQ)";
                             String ext = isM4A ? "m4a" : "opus";
 
                             return ListTile(
@@ -1037,7 +960,7 @@ class _DownloadBottomSheetState extends State<DownloadBottomSheet> with SingleTi
                               subtitle: Text('${mb.toStringAsFixed(1)} MB • ${s.bitrate.kiloBitsPerSecond.round()} kbps', style: const TextStyle(fontSize: 10, color: Colors.grey)),
                               trailing: ElevatedButton(
                                 style: ElevatedButton.styleFrom(backgroundColor: Colors.green, padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6)),
-                                onPressed: () => _startDownload(s, label, ext, true, 0),
+                                onPressed: () => _startDownload(s, label, ext),
                                 child: const Text('Download', style: TextStyle(fontSize: 10, color: Colors.white)),
                               ),
                             );
